@@ -1,227 +1,219 @@
 import telebot
 from telebot import types
-import json, os, time
-from flask import Flask, request
-from threading import Thread
+import json
+import os
+import time
 
-# ================== تنظیمات ==================
+# ------------------- تنظیمات -------------------
 TOKEN = "8251376954:AAFiVDI8CxGoxTH-Dvu23f532acZnOui7jg"
-OWNER_ID = 8321215905
-PRO_BOT_ID = "@amele55view_bot"
-
+OWNER_IDS = ["8321215905"]  # شناسه مالک‌ها به رشته
 DB_FILE = "db.json"
-WEBHOOK_URL = "https://normal-bot-3dno.onrender.com"
 
-bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
+# ------------------- دیتابیس -------------------
+if not os.path.exists(DB_FILE):
+    with open(DB_FILE, "w") as f:
+        json.dump({"users": {}, "dest_channels": [], "dest_groups": []}, f, indent=4)
 
-# ================== دیتابیس ==================
 def load_db():
-    if not os.path.exists(DB_FILE):
-        return {
-            "users": {},
-            "destinations": {   # فقط مالک
-                "channels": [],
-                "groups": [@testbotamel]
-            }
-        }
     with open(DB_FILE, "r") as f:
         return json.load(f)
 
 def save_db(db):
     with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=2)
+        json.dump(db, f, indent=4)
 
-# ================== کیبورد کاربر ==================
-def user_kb():
+db = load_db()
+
+# ------------------- ربات -------------------
+bot = telebot.TeleBot(TOKEN)
+
+def is_owner(uid):
+    return str(uid) in OWNER_IDS
+
+# ------------------- کیبوردها -------------------
+def main_keyboard(uid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("➕ افزودن کانال")
-    kb.add("▶️ شروع ویو", "⏹ توقف ویو")
-    kb.add("👥 دعوت دوستان", "🎁 هدایا")
-    kb.add("📊 لاگ من", "📞 ارتباط با ادمین")
+    kb.add("🚀 شروع ویو", "⏹ توقف ویو")
+    kb.add("🎁 هدایا")
+    if is_owner(uid):
+        kb.add("📌 تنظیم گروه و کانال مقصد", "📋 لیست کامل")
+    kb.add("🔗 دعوت دوستان")
     return kb
 
-# ================== استارت ==================
+def yes_no_keyboard():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add("✅ تایید", "❌ رد")
+    return kb
+
+# ------------------- استارت -------------------
 @bot.message_handler(commands=["start"])
 def start(msg):
-    db = load_db()
     uid = str(msg.from_user.id)
-
-    # رفرال
     args = msg.text.split()
-    if len(args) > 1:
-        inviter = args[1]
-        if inviter != uid and inviter in db["users"]:
-            db["users"][inviter]["points"] += 1
-            db["users"][inviter]["invites"] += 1
-            bot.send_message(int(inviter),
-                "🎉 یک کاربر با لینک دعوت شما وارد شد\n⭐ +1 امتیاز")
+    inviter_id = args[1] if len(args) > 1 else None
 
+    # ثبت کاربر در دیتابیس
     if uid not in db["users"]:
         db["users"][uid] = {
-            "channel": None,
+            "channels": [],
             "view": False,
-            "points": 0,
-            "invites": 0,
-            "last_bonus": 0,
-            "pro_until": 0
+            "referrals": [],
+            "subscription": 0,
+            "join_date": int(time.time())
         }
-
-    save_db(db)
-
-    bot.send_message(
-        msg.chat.id,
-        "👋 خوش اومدی به ربات ویو زن\n\n"
-        "ℹ️ در نسخه رایگان فقط:\n"
-        "📝 متن\n"
-        "🖼 عکس\n"
-        "ویو می‌گیرن.\n\n"
-        "🎁 با دعوت دوستان می‌تونی اشتراک Pro بگیری 🚀",
-        reply_markup=user_kb()
-    )
-
-# ================== افزودن کانال مبدأ ==================
-@bot.message_handler(func=lambda m: m.text == "➕ افزودن کانال")
-def add_channel(m):
-    bot.send_message(
-        m.chat.id,
-        "📢 آیدی کانال مبدأ را ارسال کنید\n"
-        "نمونه:\n@mychannel\n\n"
-        "⚠️ ربات باید ادمین کانال باشد"
-    )
-    bot.register_next_step_handler(m, save_channel)
-
-def save_channel(m):
-    if not m.text.startswith("@"):
-        bot.send_message(m.chat.id, "❌ آیدی باید با @ شروع شود")
-        return
-
-    try:
-        member = bot.get_chat_member(m.text, bot.get_me().id)
-        if member.status not in ["administrator", "creator"]:
-            bot.send_message(m.chat.id, "❌ ربات ادمین کانال نیست")
-            return
-    except:
-        bot.send_message(m.chat.id, "❌ کانال نامعتبر است")
-        return
-
-    db = load_db()
-    db["users"][str(m.from_user.id)]["channel"] = m.text
-    save_db(db)
-
-    bot.send_message(
-        m.chat.id,
-        f"✅ کانال {m.text} ثبت شد\n"
-        "▶️ حالا می‌تونی ویو رو شروع کنی"
-    )
-
-# ================== شروع / توقف ویو ==================
-@bot.message_handler(func=lambda m: m.text == "▶️ شروع ویو")
-def start_view(m):
-    db = load_db()
-    user = db["users"][str(m.from_user.id)]
-
-    if not user["channel"]:
-        bot.send_message(m.chat.id, "❌ ابتدا کانال خود را ثبت کنید")
-        return
-
-    if user["pro_until"] > time.time():
-        bot.send_message(
-            m.chat.id,
-            "👑 اشتراک Pro برای شما فعال است\n"
-            f"👉 وارد ربات Pro شوید:\n{PRO_BOT_ID}"
-        )
-        return
-
-    user["view"] = True
-    save_db(db)
-    bot.send_message(m.chat.id, "▶️ ویو فعال شد")
-
-@bot.message_handler(func=lambda m: m.text == "⏹ توقف ویو")
-def stop_view(m):
-    db = load_db()
-    db["users"][str(m.from_user.id)]["view"] = False
-    save_db(db)
-    bot.send_message(m.chat.id, "⏹ ویو متوقف شد")
-
-# ================== هدایا ==================
-@bot.message_handler(func=lambda m: m.text == "🎁 هدایا")
-def gifts(m):
-    db = load_db()
-    u = db["users"][str(m.from_user.id)]
-
-    # هدیه رایگان هر 3 روز
-    if time.time() - u["last_bonus"] > 259200:
-        u["points"] += 1
-        u["last_bonus"] = time.time()
         save_db(db)
+        # اطلاع مالک
+        for owner in OWNER_IDS:
+            bot.send_message(owner,
+                             f"👤 کاربر جدید:\nاسم: {msg.from_user.first_name}\nایدی: @{msg.from_user.username or 'ندارد'}\nآیدی عددی: {uid}")
+    # ثبت رفرال
+    if inviter_id and inviter_id != uid:
+        if inviter_id in db["users"] and uid not in db["users"][inviter_id]["referrals"]:
+            db["users"][inviter_id]["referrals"].append(uid)
+            save_db(db)
+            bot.send_message(inviter_id,
+                             f"🎉 کاربر @{msg.from_user.username or msg.from_user.first_name} با لینک دعوت شما وارد شد!\nامتیاز شما افزایش یافت.")
 
-    days = u["points"] // 3
+    # اطلاع کاربر
+    bot.send_message(uid, "🎯 خوش آمدید!\nاین ربات نسخه عادی است.\nفقط متن و عکس ویو می‌گیرند.\nبرای شروع از دکمه‌ها استفاده کنید.",
+                     reply_markup=main_keyboard(uid))
 
-    bot.send_message(
-        m.chat.id,
-        f"🎁 هدایا\n\n"
-        f"⭐ امتیاز: {u['points']}\n"
-        f"👥 دعوت‌ها: {u['invites']}\n\n"
-        f"👑 اشتراک قابل دریافت: {days} روز Pro"
-    )
+# ------------------- دکمه‌ها -------------------
+@bot.message_handler(func=lambda m: True)
+def handle_buttons(msg):
+    uid = str(msg.from_user.id)
+    text = msg.text
 
-# ================== لاگ ==================
-@bot.message_handler(func=lambda m: m.text == "📊 لاگ من")
-def log(m):
-    u = load_db()["users"][str(m.from_user.id)]
-    bot.send_message(
-        m.chat.id,
-        "━━━━━━━━━━\n"
-        f"📢 کانال: {u['channel']}\n"
-        f"▶️ ویو فعال: {u['view']}\n"
-        f"⭐ امتیاز: {u['points']}\n"
-        f"👥 دعوت‌ها: {u['invites']}\n"
-        "━━━━━━━━━━"
-    )
-
-# ================== ارتباط با ادمین ==================
-@bot.message_handler(func=lambda m: m.text == "📞 ارتباط با ادمین")
-def support(m):
-    bot.send_message(m.chat.id, f"📞 ادمین:\n@{OWNER_ID}")
-
-# ================== ویو (متن و عکس) ==================
-@bot.channel_post_handler(func=lambda m: True)
-def handle_view(m):
-    if not (m.text or m.photo):
+    # اضافه کردن کانال
+    if text == "➕ افزودن کانال":
+        msg_ = bot.send_message(uid, "لطفاً لینک کانال خود را با @ وارد کنید:")
+        bot.register_next_step_handler(msg_, add_channel)
         return
 
-    db = load_db()
+    # شروع ویو
+    if text == "🚀 شروع ویو":
+        db["users"][uid]["view"] = True
+        save_db(db)
+        bot.send_message(uid, "✅ ویو برای کانال‌های شما فعال شد.")
+        return
 
-    for u in db["users"].values():
-        if not u["view"]:
-            continue
-        if u["channel"] != f"@{m.chat.username}":
-            continue
+    # توقف ویو
+    if text == "⏹ توقف ویو":
+        db["users"][uid]["view"] = False
+        save_db(db)
+        bot.send_message(uid, "⏹ ویو متوقف شد.")
+        return
 
-        for ch in db["destinations"]["channels"]:
-            time.sleep(1.5)
-            bot.forward_message(ch, m.chat.id, m.message_id)
+    # هدایا
+    if text == "🎁 هدایا":
+        points = len(db["users"][uid]["referrals"])
+        bot.send_message(uid,
+                         f"🎁 شما {points} امتیاز دارید.\nهر 3 امتیاز = 1 روز اشتراک PRO.\nلینک دعوت شما:\nhttps://t.me/{bot.get_me().username}?start={uid}")
+        return
 
-        for g in db["destinations"]["groups"]:
-            time.sleep(1.5)
-            bot.forward_message(g, m.chat.id, m.message_id)
+    # دعوت دوستان
+    if text == "🔗 دعوت دوستان":
+        points = len(db["users"][uid]["referrals"])
+        bot.send_message(uid,
+                         f"📢 لینک اختصاصی شما برای دعوت دوستان:\nhttps://t.me/{bot.get_me().username}?start={uid}\n\nتعداد دوستان دعوت شده: {points}")
+        return
 
-# ================== وب‌هوک ==================
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is alive"
+    # مالک: تنظیم گروه و کانال مقصد
+    if is_owner(uid) and text == "📌 تنظیم گروه و کانال مقصد":
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        kb.add("➕ اضافه کردن کانال مقصد", "➖ حذف کانال مقصد")
+        kb.add("➕ اضافه کردن گروه مقصد", "➖ حذف گروه مقصد")
+        bot.send_message(uid, "🛠 پنل مقصد:", reply_markup=kb)
+        return
 
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    bot.process_new_updates(
-        [telebot.types.Update.de_json(request.stream.read().decode("utf-8"))]
-    )
-    return "OK"
+    # مالک: لیست کامل
+    if is_owner(uid) and text == "📋 لیست کامل":
+        txt = "📊 کاربران و کانال‌ها:\n\n"
+        for u, info in db["users"].items():
+            txt += f"👤 {u} - کانال‌ها: {', '.join(info['channels'])} - دوستان دعوت شده: {len(info['referrals'])}\n"
+        txt += f"\n🎯 کانال‌های مقصد: {', '.join(db['dest_channels'])}\n🎯 گروه‌های مقصد: {', '.join(db['dest_groups'])}"
+        bot.send_message(uid, txt)
+        return
 
-def run():
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=10000)
+    # اضافه کردن کانال یا گروه مقصد توسط مالک
+    if is_owner(uid):
+        if text in ["➕ اضافه کردن کانال مقصد", "➖ حذف کانال مقصد",
+                    "➕ اضافه کردن گروه مقصد", "➖ حذف گروه مقصد"]:
+            msg_ = bot.send_message(uid, "لطفاً لینک @ وارد کنید:")
+            bot.register_next_step_handler(msg_, lambda m, t=text: handle_dest_channel_group(m, t))
+            return
 
-Thread(target=run).start()
+
+# ------------------- توابع -------------------
+def add_channel(msg):
+    uid = str(msg.from_user.id)
+    ch = msg.text.strip()
+    if not ch.startswith("@"):
+        bot.send_message(uid, "❌ لینک باید با @ شروع شود!")
+        return
+    if ch not in db["users"][uid]["channels"]:
+        db["users"][uid]["channels"].append(ch)
+        save_db(db)
+        bot.send_message(uid, f"✅ کانال {ch} اضافه شد!")
+    else:
+        bot.send_message(uid, "این کانال قبلاً اضافه شده بود.")
+
+def handle_dest_channel_group(msg, action):
+    uid = str(msg.from_user.id)
+    ch = msg.text.strip()
+    if not ch.startswith("@"):
+        bot.send_message(uid, "❌ لینک باید با @ شروع شود!")
+        return
+    if action == "➕ اضافه کردن کانال مقصد":
+        if ch not in db["dest_channels"]:
+            db["dest_channels"].append(ch)
+            save_db(db)
+            bot.send_message(uid, f"✅ کانال مقصد {ch} اضافه شد!")
+    elif action == "➖ حذف کانال مقصد":
+        if ch in db["dest_channels"]:
+            db["dest_channels"].remove(ch)
+            save_db(db)
+            bot.send_message(uid, f"❌ کانال مقصد {ch} حذف شد!")
+    elif action == "➕ اضافه کردن گروه مقصد":
+        if ch not in db["dest_groups"]:
+            db["dest_groups"].append(ch)
+            save_db(db)
+            bot.send_message(uid, f"✅ گروه مقصد {ch} اضافه شد!")
+    elif action == "➖ حذف گروه مقصد":
+        if ch in db["dest_groups"]:
+            db["dest_groups"].remove(ch)
+            save_db(db)
+            bot.send_message(uid, f"❌ گروه مقصد {ch} حذف شد!")
+
+# ------------------- ویو واقعی -------------------
+@bot.channel_post_handler(func=lambda m: True)
+def forward_channel(msg):
+    for uid, info in db["users"].items():
+        if info["view"]:
+            for dest in db["dest_channels"]:
+                try:
+                    bot.forward_message(dest, msg.chat.id, msg.message_id)
+                except: pass
+            for dest in db["dest_groups"]:
+                try:
+                    bot.forward_message(dest, msg.chat.id, msg.message_id)
+                except: pass
+
+@bot.message_handler(func=lambda m: True)
+def forward_group(msg):
+    if msg.chat.type in ["group", "supergroup"]:
+        for uid, info in db["users"].items():
+            if info["view"]:
+                for dest in db["dest_channels"]:
+                    try:
+                        bot.forward_message(dest, msg.chat.id, msg.message_id)
+                    except: pass
+                for dest in db["dest_groups"]:
+                    try:
+                        bot.forward_message(dest, msg.chat.id, msg.message_id)
+                    except: pass
+
+# ------------------- اجرا -------------------
+# برای Render حتما وب‌هوک باشه:
+bot.infinity_polling()
