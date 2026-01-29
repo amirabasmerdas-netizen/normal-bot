@@ -10,7 +10,7 @@ OWNER_ID = 8321215905
 PRO_BOT_ID = "@amele55view_bot"
 
 DB_FILE = "db.json"
-WEBHOOK_URL = "https://YOUR-RENDER-URL.onrender.com"
+WEBHOOK_URL = "https://normal-bot-3dno.onrender.com"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
