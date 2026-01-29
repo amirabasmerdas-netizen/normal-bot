@@ -22,7 +22,7 @@ def load_db():
             "users": {},
             "destinations": {   # فقط مالک
                 "channels": [],
-                "groups": []
+                "groups": [@testbotamel]
             }
         }
     with open(DB_FILE, "r") as f:
