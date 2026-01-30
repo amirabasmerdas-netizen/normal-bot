@@ -7,7 +7,7 @@ TOKEN = os.getenv("NORMAL_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 10000))
 
-OWNER_ID = 8588773170  # 👑 مالک
+OWNER_ID = 8321215905  # 👑 مالک
 
 if not TOKEN:
     raise RuntimeError("NORMAL_BOT_TOKEN is not set")
