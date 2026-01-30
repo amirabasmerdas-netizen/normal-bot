@@ -1,24 +1,22 @@
-import telebot
-from telebot import types
-import json
 import os
+import json
+from telebot import TeleBot, types
 from flask import Flask, request
 
-# ======= تنظیمات =======import os
-TOKEN = os.environ.get("BOT_TOKEN")
-OWNER_ID = int(os.environ.get("OWNER_ID"))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+# ==================== تنظیمات ====================
+TOKEN_NORMAL = os.getenv("TOKEN_NORMAL")  # توکن ربات Normal
+TOKEN_PRO = os.getenv("TOKEN_PRO")        # توکن ربات Pro
+OWNER_ID = int(os.getenv("OWNER_ID"))    # آی‌دی مالک
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")   # آدرس وب‌هوک
 
-
-# ======= دیتابیس =======
-DB_FILE = "normal_db.json"
-if not os.path.exists(DB_FILE):
-    with open(DB_FILE,"w") as f:
-        json.dump({"users":{}, "channels":{}, "groups":{}},f)
+# ==================== دیتابیس ====================
+DB_FILE = "db.json"
 
 def load_db():
-    with open(DB_FILE,"r") as f:
-        return json.load(f)
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE,"r") as f:
+            return json.load(f)
+    return {"users":{}, "channels":[], "groups":[], "referrals":{}}
 
 def save_db(db):
     with open(DB_FILE,"w") as f:
@@ -26,118 +24,166 @@ def save_db(db):
 
 db = load_db()
 
-bot = telebot.TeleBot(TOKEN)
+# ==================== ربات ها ====================
+bot_normal = TeleBot(TOKEN_NORMAL)
+bot_pro = TeleBot(TOKEN_PRO)
+
+# ==================== وب اپ برای وب هوک ====================
 app = Flask(__name__)
 
-# ======= کیبوردها =======
-def user_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("➕ افزودن کانال")
-    kb.add("▶️ شروع ویو", "⏹ توقف ویو")
-    kb.add("📊 امتیاز و دوستان")
-    kb.add("🎁 هدایا")
-    return kb
+@app.route(f"/{TOKEN_NORMAL}", methods=["POST"])
+def webhook_normal():
+    json_str = request.get_data().decode("utf-8")
+    update = types.Update.de_json(json_str)
+    bot_normal.process_new_updates([update])
+    return "OK", 200
 
-def owner_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("➕ اضافه کردن کانال/گروه مقصد")
-    kb.add("➖ حذف کانال/گروه مقصد")
-    kb.add("📋 لاگ کاربران")
-    return kb
+@app.route(f"/{TOKEN_PRO}", methods=["POST"])
+def webhook_pro():
+    json_str = request.get_data().decode("utf-8")
+    update = types.Update.de_json(json_str)
+    bot_pro.process_new_updates([update])
+    return "OK", 200
 
-# ======= استارت =======
-@bot.message_handler(commands=["start"])
-def start(msg):
-    uid = msg.from_user.id
-    if uid == OWNER_ID:
-        bot.send_message(uid,"👑 پنل مالک",reply_markup=owner_keyboard())
-    else:
-        bot.send_message(uid,"👋 سلام!\nاین ربات برای ویو گرفتن متن و عکس طراحی شده.\nبرای شروع پنل کاربری را ببینید.",reply_markup=user_keyboard())
-
-# ======= دکمه‌ها =======
-@bot.message_handler(func=lambda m: True)
-def buttons(msg):
-    uid = msg.from_user.id
-    text = msg.text
-    db = load_db()
-
-    # پنل کاربر
-    if uid != OWNER_ID:
-        if text=="➕ افزودن کانال":
-            msg = bot.send_message(uid,"لطفاً ایدی کانال با @ وارد کنید:")
-            bot.register_next_step_handler(msg, add_channel)
-        elif text=="▶️ شروع ویو":
-            bot.send_message(uid,"✅ ویو شما شروع شد!")
-        elif text=="⏹ توقف ویو":
-            bot.send_message(uid,"⏹ ویو شما متوقف شد!")
-        elif text=="📊 امتیاز و دوستان":
-            user = db["users"].get(str(uid),{"referrals":0})
-            bot.send_message(uid,f"👤 تعداد دوستان دعوت شده: {user['referrals']}")
-        elif text=="🎁 هدایا":
-            bot.send_message(uid,"🎁 شما می‌توانید امتیاز خود را برای هدایای ویژه استفاده کنید.")
-
-    # پنل مالک
-    else:
-        if text=="➕ اضافه کردن کانال/گروه مقصد":
-            msg = bot.send_message(uid,"لطفاً ایدی کانال یا گروه مقصد را با @ وارد کنید:")
-            bot.register_next_step_handler(msg, add_destination)
-        elif text=="➖ حذف کانال/گروه مقصد":
-            msg = bot.send_message(uid,"لطفاً ایدی کانال یا گروهی که می‌خواید حذف کنید با @ وارد کنید:")
-            bot.register_next_step_handler(msg, remove_destination)
-        elif text=="📋 لاگ کاربران":
-            text_log = ""
-            for u,data in db["users"].items():
-                text_log += f"👤 {u}: دعوت شده‌ها {data.get('referrals',0)}\n"
-            if not text_log: text_log = "🚫 کاربری ثبت نشده"
-            bot.send_message(uid,text_log)
-
-# ======= توابع =======
-def add_channel(msg):
-    uid = msg.chat.id
-    ch = msg.text.strip()
-    db = load_db()
-    if not ch.startswith("@"):
-        bot.send_message(uid,"❌ ایدی کانال باید با @ شروع شود")
-        return
-    db["channels"][str(uid)] = ch
-    save_db(db)
-    bot.send_message(uid,f"✅ کانال {ch} اضافه شد!")
-
-def add_destination(msg):
-    uid = msg.chat.id
-    dest = msg.text.strip()
-    db = load_db()
-    if not dest.startswith("@"):
-        bot.send_message(uid,"❌ ایدی باید با @ شروع شود")
-        return
-    db["groups"][dest] = "destination"
-    save_db(db)
-    bot.send_message(uid,f"✅ مقصد {dest} اضافه شد!")
-
-def remove_destination(msg):
-    uid = msg.chat.id
-    dest = msg.text.strip()
-    db = load_db()
-    if dest in db["groups"]:
-        del db["groups"][dest]
+# ==================== توابع عمومی ====================
+def ensure_user(uid, username, first_name):
+    if str(uid) not in db["users"]:
+        db["users"][str(uid)] = {
+            "username": username or "ندارد",
+            "first_name": first_name or "نامشخص",
+            "referrals": 0,
+            "ref_by": None,
+            "subscription": "normal",
+            "points": 0
+        }
         save_db(db)
-        bot.send_message(uid,f"❌ مقصد {dest} حذف شد!")
-    else:
-        bot.send_message(uid,"مقصد یافت نشد!")
 
-# ======= وب‌هوک =======
-@app.route('/', methods=['POST'])
-def webhook():
-    json_str = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "!", 200
+def add_referral(uid, ref_id):
+    if str(uid) in db["users"] and str(ref_id) in db["users"]:
+        if db["users"][str(uid)]["ref_by"] is None:
+            db["users"][str(uid)]["ref_by"] = str(ref_id)
+            db["users"][str(ref_id)]["referrals"] += 1
+            db["users"][str(ref_id)]["points"] += 1
+            save_db(db)
+            return True
+    return False
 
-@app.route('/')
-def index():
-    return "Normal Bot is running!",200
+# ==================== پنل ها ====================
+def main_keyboard(user_type="normal"):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📌 کانال مبداء", "📌 کانال/گروه مقصد")
+    kb.add("▶️ شروع ویو", "⏹️ توقف ویو")
+    kb.add("🔗 دعوت دوستان", "🎁 هدایا")
+    kb.add("📋 لاگ من", "ℹ️ راهنما")
+    if user_type=="owner":
+        kb.add("📋 لیست کاربران", "➕ تنظیم کانال/گروه مقصد")
+    return kb
 
-if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0",port=10000)
+# ==================== استارت ====================
+def start_bot(bot):
+    @bot.message_handler(commands=["start"])
+    def start(msg):
+        uid = msg.from_user.id
+        username = msg.from_user.username
+        first_name = msg.from_user.first_name
+        ensure_user(uid, username, first_name)
+
+        # بررسی لینک رفرال
+        args = msg.text.split()
+        if len(args) > 1:
+            ref_id = args[1]
+            add_referral(uid, ref_id)
+
+        # پیام خوش آمد
+        if db["users"][str(uid)]["subscription"]=="pro":
+            text = f"✨ اشتراک Pro شما فعال است! از سرعت و قابلیت‌های حرفه‌ای لذت ببرید."
+        else:
+            text = "✨ ربات Normal همیشه رایگان است. فقط متن و عکس ویو دریافت می‌کنید."
+
+        bot.send_message(uid, text, reply_markup=main_keyboard("owner" if uid==OWNER_ID else "normal"))
+
+        # اطلاع مالک
+        if uid != OWNER_ID:
+            bot.send_message(OWNER_ID, f"📩 کاربر @{username} با ایدی {uid} وارد ربات شد.")
+
+# ==================== دعوت دوستان ====================
+def referral_handler(bot):
+    @bot.message_handler(func=lambda m: m.text=="🔗 دعوت دوستان")
+    def invite(msg):
+        uid = msg.from_user.id
+        link = f"https://t.me/{bot.get_me().username}?start={uid}"
+        ref_count = db["users"][str(uid)]["referrals"]
+        text = f"🔗 لینک دعوت شما:\n{link}\n👥 دوستان دعوت شده: {ref_count}"
+        bot.send_message(uid, text)
+
+# ==================== شروع/توقف ویو ====================
+def view_control(bot):
+    @bot.message_handler(func=lambda m: m.text=="▶️ شروع ویو")
+    def start_view(msg):
+        uid = msg.from_user.id
+        bot.send_message(uid,"✅ شروع ویو شد")
+
+    @bot.message_handler(func=lambda m: m.text=="⏹️ توقف ویو")
+    def stop_view(msg):
+        uid = msg.from_user.id
+        bot.send_message(uid,"⏹️ ویو متوقف شد")
+
+# ==================== هدایا ====================
+def gifts(bot):
+    @bot.message_handler(func=lambda m: m.text=="🎁 هدایا")
+    def show_gifts(msg):
+        uid = msg.from_user.id
+        points = db["users"][str(uid)]["points"]
+        text = f"🎁 امتیاز شما: {points}\nهر ۳ امتیاز = ۱ روز اشتراک Pro رایگان!"
+        bot.send_message(uid, text)
+
+# ==================== لاگ ====================
+def logs(bot):
+    @bot.message_handler(func=lambda m: m.text=="📋 لاگ من")
+    def my_log(msg):
+        uid = msg.from_user.id
+        u = db["users"][str(uid)]
+        text = f"📄 لاگ شما:\n👤 نام: {u['first_name']}\n💻 یوزرنیم: @{u['username']}\n🔗 دوستان دعوت شده: {u['referrals']}\n⚡ امتیاز: {u['points']}"
+        bot.send_message(uid, text)
+
+# ==================== راهنما ====================
+def help_msg(bot):
+    @bot.message_handler(func=lambda m: m.text=="ℹ️ راهنما")
+    def guide(msg):
+        text = "📌 راهنما:\n- Normal: متن و عکس ویو\n- Pro: همه نوع پیام\n- لینک دعوت برای دریافت امتیاز و هدایا"
+        bot.send_message(msg.from_user.id, text)
+
+# ==================== ثبت کانال/گروه ====================
+def owner_panel(bot):
+    @bot.message_handler(func=lambda m: m.text=="📋 لیست کاربران")
+    def list_users(msg):
+        text = "📄 کاربران ربات:\n"
+        for uid,u in db["users"].items():
+            text += f"👤 @{u['username']} | ایدی: {uid} | رفرال: {u['referrals']} | امتیاز: {u['points']}\n"
+        bot.send_message(msg.from_user.id, text)
+
+# ==================== فعال سازی ربات ====================
+start_bot(bot_normal)
+start_bot(bot_pro)
+referral_handler(bot_normal)
+referral_handler(bot_pro)
+view_control(bot_normal)
+view_control(bot_pro)
+gifts(bot_normal)
+gifts(bot_pro)
+logs(bot_normal)
+logs(bot_pro)
+help_msg(bot_normal)
+help_msg(bot_pro)
+owner_panel(bot_normal)
+owner_panel(bot_pro)
+
+# ==================== اجرا ====================
+if __name__=="__main__":
+    # ست کردن وب هوک
+    bot_normal.remove_webhook()
+    bot_normal.set_webhook(f"{WEBHOOK_URL}/{TOKEN_NORMAL}")
+    bot_pro.remove_webhook()
+    bot_pro.set_webhook(f"{WEBHOOK_URL}/{TOKEN_PRO}")
+    # اجرای فلَس اپ
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
