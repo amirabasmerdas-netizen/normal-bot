@@ -1,209 +1,180 @@
-import os
+import telebot
+from telebot import types
 import json
-from aiohttp import web, ClientSession
-from aiohttp.web import Response
+import os
+from flask import Flask, request
 
-# ================= CONFIG =================
-TOKEN = os.getenv("NORMAL_BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", 10000))
+TOKEN = "NORMAL_BOT_TOKEN"
+OWNER_ID =   # مالک اصلی
+WEBHOOK_URL = "WEBHOOK_URL"  # لینک وب‌هوک ربات
 
-OWNER_ID = 8321215905  # 👑 مالک
+# ---------- دیتابیس ----------
+DB_PATH = "db_normal.json"
 
-if not TOKEN:
-    raise RuntimeError("NORMAL_BOT_TOKEN is not set")
-
-API_URL = f"https://api.telegram.org/bot{TOKEN}"
-DATA_FILE = "data.json"
-
-# ================= DATA =================
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+def load_db():
+    if os.path.exists(DB_PATH):
+        with open(DB_PATH, "r") as f:
             return json.load(f)
-    return {"users": {}, "destinations": [], "referrals": {}}
-
-def save_data():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-data = load_data()
-
-# ================= TELEGRAM API =================
-async def tg(method, payload=None):
-    async with ClientSession() as session:
-        async with session.post(f"{API_URL}/{method}", json=payload) as resp:
-            return await resp.json()
-
-async def send(chat_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode":"Markdown"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    await tg("sendMessage", payload)
-
-# ================= USER PANEL =================
-def main_keyboard():
-    from aiohttp.web_request import json_response
+    # دیتابیس اولیه
     return {
-        "keyboard":[
-            ["👥 افزودن دوستان", "📋 امتیاز و هدایا"],
-            ["📌 لیست کانال‌ها", "▶️ شروع ویو", "⏹ توقف ویو"]
-        ],
-        "resize_keyboard":True
+        "owners": [OWNER_ID],
+        "users": {},
+        "channels": {},
+        "dest_channels": {},
+        "referrals": {}
     }
 
-# ================= OWNER PANEL =================
+def save_db(db):
+    with open(DB_PATH, "w") as f:
+        json.dump(db, f, indent=4)
+
+db = load_db()
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
+
+# ---------- کیبوردها ----------
+def user_keyboard(user_id):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("➕ افزودن کانال مبداء", "🟢 شروع ویو", "🔴 توقف ویو")
+    kb.add("🎁 دعوت دوستان", "📊 لاگ فعالیت")
+    return kb
+
 def owner_keyboard():
-    return {
-        "keyboard":[
-            ["➕ افزودن کانال مقصد","➖ حذف کانال مقصد"],
-            ["📋 لیست مقاصد","📄 لاگ کاربران"]
-        ],
-        "resize_keyboard":True
-    }
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("➕ افزودن کانال/گروه مقصد", "➖ حذف کانال/گروه مقصد")
+    kb.add("📊 مشاهده لاگ کاربران")
+    return kb
 
-# ================= HANDLERS =================
-async def handle_start(chat_id):
-    if str(chat_id) not in data["users"]:
-        data["users"][str(chat_id)] = {"joined": True, "score":0}
-        save_data()
-
-    # پیام خوش‌آمد برای کاربران
-    if chat_id != OWNER_ID:
-        text = (
-            "👋 خوش اومدی!\n\n"
-            "🤖 این ربات Normal فعال است.\n"
-            "📌 فعلاً فقط *متن و عکس* ویو می‌گیرند.\n\n"
-            "💡 می‌توانید دوستانتان را دعوت کنید و امتیاز جمع کنید."
-        )
-        await send(chat_id, text, main_keyboard())
+# ---------- استارت ----------
+@bot.message_handler(commands=["start"])
+def start(msg):
+    uid = msg.from_user.id
+    first = msg.from_user.first_name or "کاربر"
+    # ثبت کاربر
+    if str(uid) not in db["users"]:
+        db["users"][str(uid)] = {
+            "channels": [],
+            "referrals": [],
+            "points": 0
+        }
+        save_db(db)
+    # خوش آمد
+    if uid == OWNER_ID:
+        bot.send_message(uid, "👑 پنل مالک فعال شد:", reply_markup=owner_keyboard())
     else:
-        await send(chat_id, "👑 پنل مالک", owner_keyboard())
+        bot.send_message(uid, "👋 سلام {}! این ربات ویو زن متن و عکس است.\nبرای استفاده، کیبورد زیر را مشاهده کن.".format(first), reply_markup=user_keyboard(uid))
 
-# ================= OWNER COMMANDS =================
-async def handle_owner(chat_id, text):
-    parts = text.split()
-    # افزودن مقصد
-    if parts[0] == "➕ افزودن کانال مقصد":
-        await send(chat_id, "لطفاً آیدی کانال مقصد را با @ ارسال کنید")
-        data["awaiting_dest"] = True
-        save_data()
+# ---------- افزودن کانال مبداء ----------
+@bot.message_handler(func=lambda m: m.text == "➕ افزودن کانال مبداء")
+def add_source_channel(msg):
+    uid = msg.from_user.id
+    bot.send_message(uid, "لطفاً آیدی کانال با @ ارسال کنید (مثال: @examplechannel):")
+    bot.register_next_step_handler(msg, save_source_channel)
+
+def save_source_channel(msg):
+    uid = msg.from_user.id
+    ch = msg.text.strip()
+    if not ch.startswith("@"):
+        bot.send_message(uid, "❌ آیدی کانال باید با @ شروع شود.")
         return
-    if str(chat_id) in data.get("awaiting_dest", {}) and data["awaiting_dest"]:
-        dest = text.strip()
-        if not dest.startswith("@"):
-            await send(chat_id, "❌ آیدی باید با @ شروع شود")
-            return
-        if dest in data["destinations"]:
-            await send(chat_id, "⚠️ این کانال قبلاً اضافه شده")
-            return
-        data["destinations"].append(dest)
-        data["awaiting_dest"] = False
-        save_data()
-        await send(chat_id, f"✅ مقصد {dest} اضافه شد")
+    db["users"][str(uid)]["channels"].append(ch)
+    save_db(db)
+    bot.send_message(uid, f"✅ کانال مبداء {ch} ثبت شد!")
+
+# ---------- افزودن کانال/گروه مقصد (مالک) ----------
+@bot.message_handler(func=lambda m: m.text == "➕ افزودن کانال/گروه مقصد" and m.from_user.id == OWNER_ID)
+def add_dest_channel(msg):
+    bot.send_message(OWNER_ID, "لطفاً آیدی کانال یا گروه مقصد با @ ارسال کنید:")
+    bot.register_next_step_handler(msg, save_dest_channel)
+
+def save_dest_channel(msg):
+    ch = msg.text.strip()
+    if not ch.startswith("@"):
+        bot.send_message(OWNER_ID, "❌ آیدی باید با @ شروع شود.")
         return
+    db["dest_channels"][ch] = True
+    save_db(db)
+    bot.send_message(OWNER_ID, f"✅ مقصد {ch} ثبت شد!")
 
-    # حذف مقصد
-    if parts[0] == "➖ حذف کانال مقصد":
-        await send(chat_id, "لطفاً آیدی کانال را برای حذف ارسال کنید")
-        data["awaiting_remove"] = True
-        save_data()
-        return
-    if str(chat_id) in data.get("awaiting_remove", {}) and data["awaiting_remove"]:
-        dest = text.strip()
-        if dest in data["destinations"]:
-            data["destinations"].remove(dest)
-            data["awaiting_remove"] = False
-            save_data()
-            await send(chat_id, f"🗑 کانال {dest} حذف شد")
-        else:
-            await send(chat_id, "❌ چنین کانالی وجود ندارد")
-        return
+# ---------- حذف کانال/گروه مقصد (مالک) ----------
+@bot.message_handler(func=lambda m: m.text == "➖ حذف کانال/گروه مقصد" and m.from_user.id == OWNER_ID)
+def remove_dest_channel(msg):
+    bot.send_message(OWNER_ID, "لطفاً آیدی کانال یا گروه مقصد برای حذف ارسال کنید:")
+    bot.register_next_step_handler(msg, del_dest_channel)
 
-    # لیست مقاصد
-    if parts[0] == "📋 لیست مقاصد":
-        if not data["destinations"]:
-            await send(chat_id, "📭 هیچ مقصدی تنظیم نشده")
-        else:
-            text = "📌 مقاصد فعلی:\n" + "\n".join(data["destinations"])
-            await send(chat_id, text)
-        return
+def del_dest_channel(msg):
+    ch = msg.text.strip()
+    if ch in db["dest_channels"]:
+        del db["dest_channels"][ch]
+        save_db(db)
+        bot.send_message(OWNER_ID, f"❌ مقصد {ch} حذف شد.")
+    else:
+        bot.send_message(OWNER_ID, "❌ مقصد یافت نشد.")
 
-    # لاگ کاربران
-    if parts[0] == "📄 لاگ کاربران":
-        text = "👥 لیست کاربران:\n"
-        for uid,u in data["users"].items():
-            text += f"ID: {uid}, Score: {u.get('score',0)}\n"
-        await send(chat_id, text)
-        return
+# ---------- لاگ کاربران (مالک) ----------
+@bot.message_handler(func=lambda m: m.text == "📊 مشاهده لاگ کاربران" and m.from_user.id == OWNER_ID)
+def view_logs(msg):
+    text = "📋 لاگ کاربران:\n"
+    for uid, data in db["users"].items():
+        text += f"🆔 {uid} | کانال‌ها: {', '.join(data['channels'])} | دوستان دعوت شده: {len(data['referrals'])} | امتیاز: {data['points']}\n"
+    bot.send_message(OWNER_ID, text)
 
-# ================= REFERRAL SYSTEM =================
-def add_referral(user_id, ref_id):
-    if ref_id == user_id:
-        return
-    data["referrals"].setdefault(str(ref_id), [])
-    if user_id not in data["referrals"][str(ref_id)]:
-        data["referrals"][str(ref_id)].append(user_id)
-        data["users"][str(ref_id)]["score"] += 1
-        save_data()
+# ---------- دعوت دوستان ----------
+@bot.message_handler(func=lambda m: m.text == "🎁 دعوت دوستان")
+def referral(msg):
+    uid = msg.from_user.id
+    link = f"https://t.me/YourBotUsername?start={uid}"
+    bot.send_message(uid, f"📢 لینک دعوت شما:\n{link}\n✅ هر کاربری که با این لینک وارد شود به شما امتیاز می‌دهد.")
 
-# ================= FORWARD MESSAGE =================
-async def forward_if_allowed(message):
-    if "text" not in message and "photo" not in message:
-        return
-    for dest in data["destinations"]:
-        await tg("forwardMessage", {
-            "chat_id": dest,
-            "from_chat_id": message["chat"]["id"],
-            "message_id": message["message_id"]
-        })
+# ---------- لاگ شخصی ----------
+@bot.message_handler(func=lambda m: m.text == "📊 لاگ فعالیت")
+def personal_log(msg):
+    uid = str(msg.from_user.id)
+    data = db["users"].get(uid)
+    if data:
+        text = "📋 لاگ شما:\n"
+        text += f"کانال‌ها: {', '.join(data['channels'])}\n"
+        text += f"دوستان دعوت شده: {len(data['referrals'])}\n"
+        text += f"امتیاز: {data['points']}\n"
+        bot.send_message(msg.from_user.id, text)
 
-# ================= WEBHOOK =================
-async def webhook_handler(request):
-    update = await request.json()
-    if "message" not in update:
-        return Response(text="ok")
+# ---------- شروع/توقف ویو ----------
+@bot.message_handler(func=lambda m: m.text == "🟢 شروع ویو")
+def start_view(msg):
+    uid = str(msg.from_user.id)
+    db["users"][uid]["viewing"] = True
+    save_db(db)
+    bot.send_message(msg.from_user.id, "✅ ویو برای کانال‌های شما فعال شد!")
 
-    msg = update["message"]
-    chat = msg.get("chat", {})
-    chat_id = chat.get("id")
-    text = msg.get("text","")
+@bot.message_handler(func=lambda m: m.text == "🔴 توقف ویو")
+def stop_view(msg):
+    uid = str(msg.from_user.id)
+    db["users"][uid]["viewing"] = False
+    save_db(db)
+    bot.send_message(msg.from_user.id, "🛑 ویو برای کانال‌های شما متوقف شد!")
 
-    # استارت
-    if text.startswith("/start"):
-        await handle_start(chat_id)
-        return Response(text="ok")
+# ---------- فوروارد/ویو پیام‌ها ----------
+@bot.channel_post_handler(func=lambda m: True)
+def forward_channel(msg):
+    # فقط متن و عکس (نسخه Normal)
+    for dest in db["dest_channels"]:
+        try:
+            if msg.content_type in ["text", "photo"]:
+                bot.forward_message(dest, msg.chat.id, msg.message_id)
+        except:
+            pass
 
-    # مالک
-    if chat_id == OWNER_ID:
-        await handle_owner(chat_id, text)
-        return Response(text="ok")
+# ---------- وب‌هوک برای Render ----------
+@app.route("/", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
 
-    # پیام کانال (مبدأ)
-    if chat.get("type") == "channel":
-        await forward_if_allowed(msg)
-        return Response(text="ok")
-
-    # کاربران عادی برای رفرال
-    if text.startswith("/referral"):
-        parts = text.split()
-        if len(parts) == 2:
-            ref_id = parts[1]
-            add_referral(str(chat_id), str(ref_id))
-            await send(chat_id, "✅ رفرال ثبت شد")
-        return Response(text="ok")
-
-    return Response(text="ok")
-
-async def on_startup(app):
-    await tg("deleteWebhook")
-    await tg("setWebhook", {"url": f"{WEBHOOK_URL}/webhook"})
-    print("✅ Webhook فعال شد")
-
-# ================= RUN APP =================
-app = web.Application()
-app.router.add_post("/webhook", webhook_handler)
-app.on_startup.append(on_startup)
+# ---------- راه‌اندازی وب‌هوک ----------
+bot.remove_webhook()
+bot.set_webhook(url=WEBHOOK_URL)
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
