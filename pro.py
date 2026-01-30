@@ -1,178 +1,116 @@
 import telebot
-from telebot import types
-import json, os, time
 from flask import Flask, request
-from threading import Thread
+import os
+import json
+from datetime import datetime
 
-# ================== تنظیمات ==================
-TOKEN = "8415693666:AAFO3ug6Z9HaSgvt4wTv16b_hYMP9b7SWqg"
-OWNER_ID = 8321215905
-
-DB_FILE = "pro_db.json"
-WEBHOOK_URL = "https://YOUR-PRO-RENDER.onrender.com"
-
-bot = telebot.TeleBot(TOKEN)
+# ایجاد Flask app جداگانه
 app = Flask(__name__)
 
-# ================== دیتابیس ==================
-def load_db():
-    if not os.path.exists(DB_FILE):
-        return {
-            "users": {},
-            "destinations": {
-                "channels": [],
-                "groups": []
-            }
+# خواندن متغیرهای محیطی
+PRO_BOT_TOKEN = os.getenv('PRO_BOT_TOKEN')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+PORT = int(os.getenv('PORT', 10001))
+
+# کلاس دیتابیس
+class ProDB:
+    def __init__(self, db_name='pro_db.json'):
+        self.db_name = db_name
+        self.data = self.load()
+    
+    def load(self):
+        try:
+            with open(self.db_name, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"users": {}, "destinations": []}
+    
+    def save(self):
+        with open(self.db_name, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
+
+db = ProDB()
+bot = telebot.TeleBot(PRO_BOT_TOKEN)
+
+# وب‌هوک Route
+@app.route('/pro_webhook/' + PRO_BOT_TOKEN, methods=['POST'])
+def pro_webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Bad Request', 400
+
+# Route سلامت
+@app.route('/pro_health')
+def pro_health():
+    return json.dumps({'status': 'healthy', 'service': 'pro_bot'}), 200
+
+# دستور start
+@bot.message_handler(commands=['start'])
+def start_pro(message):
+    user_id = message.from_user.id
+    username = message.from_user.username or "ناشناس"
+    
+    if str(user_id) not in db.data["users"]:
+        db.data["users"][str(user_id)] = {
+            "id": user_id,
+            "username": username,
+            "first_name": message.from_user.first_name,
+            "pro_expiry": None,
+            "status": "active",
+            "joined": datetime.now().isoformat()
         }
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+        db.save()
+    
+    welcome = f"""
+    🚀 به ربات ویو Pro خوش آمدید!
 
-def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=2)
+    👤 کاربر: {username}
+    💎 سطح: Pro
 
-# ================== کیبورد ==================
-def kb():
-    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    k.add("➕ افزودن کانال")
-    k.add("▶️ شروع ویو", "⏹ توقف ویو")
-    k.add("📊 لاگ حرفه‌ای")
-    k.add("👑 اشتراک من")
-    return k
+    ✨ امکانات پیشرفته:
+    • پشتیبانی از تمام رسانه‌ها
+    • سرعت ویو بالا
+    • لاگ حرفه‌ای
+    • مدیریت نامحدود
+    """
+    
+    bot.send_message(user_id, welcome)
 
-# ================== استارت ==================
-@bot.message_handler(commands=["start"])
-def start(m):
-    db = load_db()
-    uid = str(m.from_user.id)
-
-    if uid not in db["users"]:
-        db["users"][uid] = {
-            "channels": [],
-            "view": False,
-            "joined": int(time.time())
-        }
-        save_db(db)
-
-    bot.send_message(
-        m.chat.id,
-        "👑 خوش آمدی به ربات ویو زن PRO\n\n"
-        "🚀 سرعت بالا\n"
-        "📊 لاگ حرفه‌ای\n"
-        "♾ بدون محدودیت\n\n"
-        "⚠️ این ربات فقط برای کاربران دارای اشتراک فعال است",
-        reply_markup=kb()
-    )
-
-# ================== افزودن کانال ==================
-@bot.message_handler(func=lambda m: m.text == "➕ افزودن کانال")
-def add_channel(m):
-    bot.send_message(
-        m.chat.id,
-        "📢 آیدی کانال مبدأ را ارسال کنید\n"
-        "مثال:\n@channelname\n\n"
-        "⚠️ ربات باید ادمین باشد"
-    )
-    bot.register_next_step_handler(m, save_channel)
-
-def save_channel(m):
-    if not m.text.startswith("@"):
-        bot.send_message(m.chat.id, "❌ آیدی نامعتبر")
-        return
-
+# Route تنظیم وب‌هوک
+@app.route('/pro/set_webhook', methods=['GET'])
+def set_pro_webhook():
     try:
-        member = bot.get_chat_member(m.text, bot.get_me().id)
-        if member.status not in ["administrator", "creator"]:
-            bot.send_message(m.chat.id, "❌ ربات ادمین نیست")
-            return
-    except:
-        bot.send_message(m.chat.id, "❌ کانال وجود ندارد")
-        return
+        bot.remove_webhook()
+        import time
+        time.sleep(1)
+        
+        webhook_url = f"{WEBHOOK_URL}/pro_webhook/{PRO_BOT_TOKEN}"
+        bot.set_webhook(url=webhook_url)
+        
+        return f'✅ وب‌هوک Pro تنظیم شد: {webhook_url}', 200
+    except Exception as e:
+        return f'❌ خطا: {str(e)}', 500
 
-    db = load_db()
-    u = db["users"][str(m.from_user.id)]
-
-    if m.text in u["channels"]:
-        bot.send_message(m.chat.id, "⚠️ این کانال قبلاً اضافه شده")
-        return
-
-    u["channels"].append(m.text)
-    save_db(db)
-
-    bot.send_message(
-        m.chat.id,
-        f"✅ کانال {m.text} اضافه شد\n"
-        "▶️ ویو آماده شروع است"
-    )
-
-# ================== شروع / توقف ==================
-@bot.message_handler(func=lambda m: m.text == "▶️ شروع ویو")
-def start_view(m):
-    db = load_db()
-    u = db["users"][str(m.from_user.id)]
-
-    if not u["channels"]:
-        bot.send_message(m.chat.id, "❌ هیچ کانالی ثبت نشده")
-        return
-
-    u["view"] = True
-    save_db(db)
-    bot.send_message(m.chat.id, "🚀 ویو PRO فعال شد")
-
-@bot.message_handler(func=lambda m: m.text == "⏹ توقف ویو")
-def stop_view(m):
-    db = load_db()
-    db["users"][str(m.from_user.id)]["view"] = False
-    save_db(db)
-    bot.send_message(m.chat.id, "⏹ ویو متوقف شد")
-
-# ================== لاگ حرفه‌ای ==================
-@bot.message_handler(func=lambda m: m.text == "📊 لاگ حرفه‌ای")
-def log(m):
-    u = load_db()["users"][str(m.from_user.id)]
-    bot.send_message(
-        m.chat.id,
-        "━━━━━━━━━━━━━━━━\n"
-        "📊 گزارش PRO\n\n"
-        f"📢 کانال‌ها: {len(u['channels'])}\n"
-        f"▶️ ویو فعال: {'✅' if u['view'] else '❌'}\n"
-        f"⏱ مدت عضویت: {(time.time()-u['joined'])//86400} روز\n"
-        "🚀 سرعت: حداکثری\n"
-        "━━━━━━━━━━━━━━━━"
-    )
-
-# ================== ویو (همه پیام‌ها) ==================
-@bot.channel_post_handler(func=lambda m: True)
-def handle_all(m):
-    db = load_db()
-
-    for u in db["users"].values():
-        if not u["view"]:
-            continue
-        if f"@{m.chat.username}" not in u["channels"]:
-            continue
-
-        for ch in db["destinations"]["channels"]:
-            bot.forward_message(ch, m.chat.id, m.message_id)
-
-        for g in db["destinations"]["groups"]:
-            bot.forward_message(g, m.chat.id, m.message_id)
-
-# ================== وب‌هوک ==================
-@app.route("/", methods=["GET"])
-def home():
-    return "PRO bot alive"
-
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    bot.process_new_updates(
-        [telebot.types.Update.de_json(request.stream.read().decode("utf-8"))]
-    )
-    return "OK"
-
-def run():
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=10000)
-
-Thread(target=run).start()
+# اجرا
+if __name__ == '__main__':
+    print("🚀 در حال راه‌اندازی ربات Pro...")
+    
+    try:
+        bot.remove_webhook()
+        import time
+        time.sleep(2)
+        
+        if WEBHOOK_URL:
+            webhook_url = f"{WEBHOOK_URL}/pro_webhook/{PRO_BOT_TOKEN}"
+            bot.set_webhook(url=webhook_url)
+            print(f"✅ وب‌هوک Pro تنظیم شد: {webhook_url}")
+        else:
+            print("⚠️ WEBHOOK_URL تنظیم نشده است!")
+            
+    except Exception as e:
+        print(f"⚠️ خطا در تنظیم وب‌هوک Pro: {e}")
+    
+    app.run(host='0.0.0.0', port=PORT, debug=False)
