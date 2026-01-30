@@ -5,7 +5,7 @@ import os
 from flask import Flask, request
 
 TOKEN = "NORMAL_BOT_TOKEN"
-OWNER_ID =   # مالک اصلی
+OWNER_ID = 8321215905  # مالک اصلی
 WEBHOOK_URL = "WEBHOOK_URL"  # لینک وب‌هوک ربات
 
 # ---------- دیتابیس ----------
