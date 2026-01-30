@@ -1,219 +1,151 @@
-import telebot
-from telebot import types
-import json
+import asyncio
+import logging
 import os
-import time
+import sqlite3
+from aiohttp import web
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import CommandStart
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# ------------------- تنظیمات -------------------
-TOKEN = "8251376954:AAFiVDI8CxGoxTH-Dvu23f532acZnOui7jg"
-OWNER_IDS = ["8321215905"]  # شناسه مالک‌ها به رشته
-DB_FILE = "db.json"
+# ---------- CONFIG ----------
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_PATH = "/webhook"
+PORT = int(os.getenv("PORT", 10000))
+PRO_BOT_ID = "@amele55view_bot"
 
-# ------------------- دیتابیس -------------------
-if not os.path.exists(DB_FILE):
-    with open(DB_FILE, "w") as f:
-        json.dump({"users": {}, "dest_channels": [], "dest_groups": []}, f, indent=4)
+logging.basicConfig(level=logging.INFO)
 
-def load_db():
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+bot = Bot(TOKEN)
+dp = Dispatcher()
 
-def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=4)
+# ---------- DATABASE ----------
+db = sqlite3.connect("normal.db")
+cur = db.cursor()
 
-db = load_db()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    inviter INTEGER,
+    points INTEGER DEFAULT 0
+)
+""")
 
-# ------------------- ربات -------------------
-bot = telebot.TeleBot(TOKEN)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS status (
+    user_id INTEGER PRIMARY KEY,
+    active INTEGER DEFAULT 0
+)
+""")
 
-def is_owner(uid):
-    return str(uid) in OWNER_IDS
+db.commit()
 
-# ------------------- کیبوردها -------------------
-def main_keyboard(uid):
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("➕ افزودن کانال")
-    kb.add("🚀 شروع ویو", "⏹ توقف ویو")
-    kb.add("🎁 هدایا")
-    if is_owner(uid):
-        kb.add("📌 تنظیم گروه و کانال مقصد", "📋 لیست کامل")
-    kb.add("🔗 دعوت دوستان")
-    return kb
+# ---------- KEYBOARD ----------
+def main_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="▶️ شروع ویو", callback_data="start_view")
+    kb.button(text="⏹ توقف ویو", callback_data="stop_view")
+    kb.button(text="➕ افزودن کانال", callback_data="add_channel")
+    kb.button(text="👥 دعوت دوستان", callback_data="referral")
+    kb.button(text="🎁 هدایا", callback_data="gift")
+    kb.button(text="📊 لاگ من", callback_data="log")
+    kb.button(text="🚀 ارتقا به Pro", callback_data="pro")
+    kb.adjust(2)
+    return kb.as_markup()
 
-def yes_no_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("✅ تایید", "❌ رد")
-    return kb
+# ---------- START ----------
+@dp.message(CommandStart())
+async def start(message: Message):
+    args = message.text.split()
+    user_id = message.from_user.id
 
-# ------------------- استارت -------------------
-@bot.message_handler(commands=["start"])
-def start(msg):
-    uid = str(msg.from_user.id)
-    args = msg.text.split()
-    inviter_id = args[1] if len(args) > 1 else None
+    cur.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    if not cur.fetchone():
+        inviter = int(args[1]) if len(args) > 1 else None
+        cur.execute("INSERT INTO users (user_id, inviter) VALUES (?,?)", (user_id, inviter))
+        if inviter:
+            cur.execute("UPDATE users SET points = points + 1 WHERE user_id=?", (inviter,))
+        db.commit()
 
-    # ثبت کاربر در دیتابیس
-    if uid not in db["users"]:
-        db["users"][uid] = {
-            "channels": [],
-            "view": False,
-            "referrals": [],
-            "subscription": 0,
-            "join_date": int(time.time())
-        }
-        save_db(db)
-        # اطلاع مالک
-        for owner in OWNER_IDS:
-            bot.send_message(owner,
-                             f"👤 کاربر جدید:\nاسم: {msg.from_user.first_name}\nایدی: @{msg.from_user.username or 'ندارد'}\nآیدی عددی: {uid}")
-    # ثبت رفرال
-    if inviter_id and inviter_id != uid:
-        if inviter_id in db["users"] and uid not in db["users"][inviter_id]["referrals"]:
-            db["users"][inviter_id]["referrals"].append(uid)
-            save_db(db)
-            bot.send_message(inviter_id,
-                             f"🎉 کاربر @{msg.from_user.username or msg.from_user.first_name} با لینک دعوت شما وارد شد!\nامتیاز شما افزایش یافت.")
+    await message.answer(
+        "👋 خوش اومدی!\n\n"
+        "ℹ️ ربات Normal فقط روی *متن و عکس* ویو می‌گیره.\n"
+        "برای امکانات کامل‌تر نسخه Pro فعاله 🚀",
+        reply_markup=main_kb(),
+        parse_mode="Markdown"
+    )
 
-    # اطلاع کاربر
-    bot.send_message(uid, "🎯 خوش آمدید!\nاین ربات نسخه عادی است.\nفقط متن و عکس ویو می‌گیرند.\nبرای شروع از دکمه‌ها استفاده کنید.",
-                     reply_markup=main_keyboard(uid))
+# ---------- CALLBACKS ----------
+@dp.callback_query(F.data == "start_view")
+async def start_view(call: CallbackQuery):
+    cur.execute("INSERT OR REPLACE INTO status (user_id, active) VALUES (?,1)", (call.from_user.id,))
+    db.commit()
+    await call.message.answer("✅ ویو برای شما فعال شد")
+    await call.answer()
 
-# ------------------- دکمه‌ها -------------------
-@bot.message_handler(func=lambda m: True)
-def handle_buttons(msg):
-    uid = str(msg.from_user.id)
-    text = msg.text
+@dp.callback_query(F.data == "stop_view")
+async def stop_view(call: CallbackQuery):
+    cur.execute("UPDATE status SET active=0 WHERE user_id=?", (call.from_user.id,))
+    db.commit()
+    await call.message.answer("⏹ ویو متوقف شد")
+    await call.answer()
 
-    # اضافه کردن کانال
-    if text == "➕ افزودن کانال":
-        msg_ = bot.send_message(uid, "لطفاً لینک کانال خود را با @ وارد کنید:")
-        bot.register_next_step_handler(msg_, add_channel)
-        return
+@dp.callback_query(F.data == "referral")
+async def referral(call: CallbackQuery):
+    me = await bot.me()
+    link = f"https://t.me/{me.username}?start={call.from_user.id}"
+    await call.message.answer(f"👥 لینک دعوت شما:\n\n{link}\n🎯 هر دعوت = 1 امتیاز")
+    await call.answer()
 
-    # شروع ویو
-    if text == "🚀 شروع ویو":
-        db["users"][uid]["view"] = True
-        save_db(db)
-        bot.send_message(uid, "✅ ویو برای کانال‌های شما فعال شد.")
-        return
+@dp.callback_query(F.data == "gift")
+async def gift(call: CallbackQuery):
+    cur.execute("UPDATE users SET points = points + 1 WHERE user_id=?", (call.from_user.id,))
+    db.commit()
+    await call.message.answer("🎁 هدیه امروز دریافت شد (+1 امتیاز)")
+    await call.answer()
 
-    # توقف ویو
-    if text == "⏹ توقف ویو":
-        db["users"][uid]["view"] = False
-        save_db(db)
-        bot.send_message(uid, "⏹ ویو متوقف شد.")
-        return
+@dp.callback_query(F.data == "log")
+async def log(call: CallbackQuery):
+    cur.execute("SELECT points FROM users WHERE user_id=?", (call.from_user.id,))
+    points = cur.fetchone()[0]
+    await call.message.answer(
+        "📊 لاگ شما\n"
+        "━━━━━━━━━━━━\n"
+        f"⭐ امتیاز: {points}\n"
+        "⚡ نسخه: Normal\n"
+        "📌 ویو: متن و عکس"
+    )
+    await call.answer()
 
-    # هدایا
-    if text == "🎁 هدایا":
-        points = len(db["users"][uid]["referrals"])
-        bot.send_message(uid,
-                         f"🎁 شما {points} امتیاز دارید.\nهر 3 امتیاز = 1 روز اشتراک PRO.\nلینک دعوت شما:\nhttps://t.me/{bot.get_me().username}?start={uid}")
-        return
+@dp.callback_query(F.data == "pro")
+async def pro(call: CallbackQuery):
+    await call.message.answer(
+        "🚀 نسخه Pro فعال‌تره!\n\n"
+        "✔ سرعت بیشتر\n"
+        "✔ همه نوع پیام\n"
+        "✔ نامحدود\n\n"
+        f"🤖 ربات Pro:\n{PRO_BOT_ID}"
+    )
+    await call.answer()
 
-    # دعوت دوستان
-    if text == "🔗 دعوت دوستان":
-        points = len(db["users"][uid]["referrals"])
-        bot.send_message(uid,
-                         f"📢 لینک اختصاصی شما برای دعوت دوستان:\nhttps://t.me/{bot.get_me().username}?start={uid}\n\nتعداد دوستان دعوت شده: {points}")
-        return
+# ---------- WEBHOOK SETUP ----------
+async def on_startup(bot: Bot):
+    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
 
-    # مالک: تنظیم گروه و کانال مقصد
-    if is_owner(uid) and text == "📌 تنظیم گروه و کانال مقصد":
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        kb.add("➕ اضافه کردن کانال مقصد", "➖ حذف کانال مقصد")
-        kb.add("➕ اضافه کردن گروه مقصد", "➖ حذف گروه مقصد")
-        bot.send_message(uid, "🛠 پنل مقصد:", reply_markup=kb)
-        return
+async def on_shutdown(bot: Bot):
+    await bot.delete_webhook()
 
-    # مالک: لیست کامل
-    if is_owner(uid) and text == "📋 لیست کامل":
-        txt = "📊 کاربران و کانال‌ها:\n\n"
-        for u, info in db["users"].items():
-            txt += f"👤 {u} - کانال‌ها: {', '.join(info['channels'])} - دوستان دعوت شده: {len(info['referrals'])}\n"
-        txt += f"\n🎯 کانال‌های مقصد: {', '.join(db['dest_channels'])}\n🎯 گروه‌های مقصد: {', '.join(db['dest_groups'])}"
-        bot.send_message(uid, txt)
-        return
+def main():
+    app = web.Application()
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
 
-    # اضافه کردن کانال یا گروه مقصد توسط مالک
-    if is_owner(uid):
-        if text in ["➕ اضافه کردن کانال مقصد", "➖ حذف کانال مقصد",
-                    "➕ اضافه کردن گروه مقصد", "➖ حذف گروه مقصد"]:
-            msg_ = bot.send_message(uid, "لطفاً لینک @ وارد کنید:")
-            bot.register_next_step_handler(msg_, lambda m, t=text: handle_dest_channel_group(m, t))
-            return
+    app.on_startup.append(lambda _: on_startup(bot))
+    app.on_shutdown.append(lambda _: on_shutdown(bot))
 
+    web.run_app(app, port=PORT)
 
-# ------------------- توابع -------------------
-def add_channel(msg):
-    uid = str(msg.from_user.id)
-    ch = msg.text.strip()
-    if not ch.startswith("@"):
-        bot.send_message(uid, "❌ لینک باید با @ شروع شود!")
-        return
-    if ch not in db["users"][uid]["channels"]:
-        db["users"][uid]["channels"].append(ch)
-        save_db(db)
-        bot.send_message(uid, f"✅ کانال {ch} اضافه شد!")
-    else:
-        bot.send_message(uid, "این کانال قبلاً اضافه شده بود.")
-
-def handle_dest_channel_group(msg, action):
-    uid = str(msg.from_user.id)
-    ch = msg.text.strip()
-    if not ch.startswith("@"):
-        bot.send_message(uid, "❌ لینک باید با @ شروع شود!")
-        return
-    if action == "➕ اضافه کردن کانال مقصد":
-        if ch not in db["dest_channels"]:
-            db["dest_channels"].append(ch)
-            save_db(db)
-            bot.send_message(uid, f"✅ کانال مقصد {ch} اضافه شد!")
-    elif action == "➖ حذف کانال مقصد":
-        if ch in db["dest_channels"]:
-            db["dest_channels"].remove(ch)
-            save_db(db)
-            bot.send_message(uid, f"❌ کانال مقصد {ch} حذف شد!")
-    elif action == "➕ اضافه کردن گروه مقصد":
-        if ch not in db["dest_groups"]:
-            db["dest_groups"].append(ch)
-            save_db(db)
-            bot.send_message(uid, f"✅ گروه مقصد {ch} اضافه شد!")
-    elif action == "➖ حذف گروه مقصد":
-        if ch in db["dest_groups"]:
-            db["dest_groups"].remove(ch)
-            save_db(db)
-            bot.send_message(uid, f"❌ گروه مقصد {ch} حذف شد!")
-
-# ------------------- ویو واقعی -------------------
-@bot.channel_post_handler(func=lambda m: True)
-def forward_channel(msg):
-    for uid, info in db["users"].items():
-        if info["view"]:
-            for dest in db["dest_channels"]:
-                try:
-                    bot.forward_message(dest, msg.chat.id, msg.message_id)
-                except: pass
-            for dest in db["dest_groups"]:
-                try:
-                    bot.forward_message(dest, msg.chat.id, msg.message_id)
-                except: pass
-
-@bot.message_handler(func=lambda m: True)
-def forward_group(msg):
-    if msg.chat.type in ["group", "supergroup"]:
-        for uid, info in db["users"].items():
-            if info["view"]:
-                for dest in db["dest_channels"]:
-                    try:
-                        bot.forward_message(dest, msg.chat.id, msg.message_id)
-                    except: pass
-                for dest in db["dest_groups"]:
-                    try:
-                        bot.forward_message(dest, msg.chat.id, msg.message_id)
-                    except: pass
-
-# ------------------- اجرا -------------------
-# برای Render حتما وب‌هوک باشه:
-bot.infinity_polling()
+if __name__ == "__main__":
+    main()
