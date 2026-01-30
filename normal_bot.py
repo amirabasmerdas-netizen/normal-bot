@@ -1,151 +1,88 @@
-import asyncio
-import logging
 import os
-import sqlite3
-from aiohttp import web
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery
-from aiogram.filters import CommandStart
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+import json
+import asyncio
+from aiohttp import web, ClientSession
 
-# ---------- CONFIG ----------
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("NORMAL_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBHOOK_PATH = "/webhook"
 PORT = int(os.getenv("PORT", 10000))
-PRO_BOT_ID = "@amele55view_bot"
 
-logging.basicConfig(level=logging.INFO)
+API_URL = f"https://api.telegram.org/bot{TOKEN}"
 
-bot = Bot(TOKEN)
-dp = Dispatcher()
+DATA_FILE = "normal_data.json"
 
-# ---------- DATABASE ----------
-db = sqlite3.connect("normal.db")
-cur = db.cursor()
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {
+        "users": {},
+        "destinations": []
+    }
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    inviter INTEGER,
-    points INTEGER DEFAULT 0
-)
-""")
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS status (
-    user_id INTEGER PRIMARY KEY,
-    active INTEGER DEFAULT 0
-)
-""")
+data = load_data()
 
-db.commit()
+async def tg(method, payload=None):
+    async with ClientSession() as session:
+        async with session.post(f"{API_URL}/{method}", json=payload) as r:
+            return await r.json()
 
-# ---------- KEYBOARD ----------
-def main_kb():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="▶️ شروع ویو", callback_data="start_view")
-    kb.button(text="⏹ توقف ویو", callback_data="stop_view")
-    kb.button(text="➕ افزودن کانال", callback_data="add_channel")
-    kb.button(text="👥 دعوت دوستان", callback_data="referral")
-    kb.button(text="🎁 هدایا", callback_data="gift")
-    kb.button(text="📊 لاگ من", callback_data="log")
-    kb.button(text="🚀 ارتقا به Pro", callback_data="pro")
-    kb.adjust(2)
-    return kb.as_markup()
-
-# ---------- START ----------
-@dp.message(CommandStart())
-async def start(message: Message):
-    args = message.text.split()
-    user_id = message.from_user.id
-
-    cur.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
-    if not cur.fetchone():
-        inviter = int(args[1]) if len(args) > 1 else None
-        cur.execute("INSERT INTO users (user_id, inviter) VALUES (?,?)", (user_id, inviter))
-        if inviter:
-            cur.execute("UPDATE users SET points = points + 1 WHERE user_id=?", (inviter,))
-        db.commit()
-
-    await message.answer(
+async def start_handler(chat_id):
+    text = (
         "👋 خوش اومدی!\n\n"
-        "ℹ️ ربات Normal فقط روی *متن و عکس* ویو می‌گیره.\n"
-        "برای امکانات کامل‌تر نسخه Pro فعاله 🚀",
-        reply_markup=main_kb(),
-        parse_mode="Markdown"
+        "🤖 این ربات نسخه Normal هست.\n"
+        "📌 فقط *متن و عکس* ویو می‌گیرن.\n\n"
+        "🎁 با دعوت دوستان امتیاز بگیر\n"
+        "🚀 برای امکانات کامل‌تر نسخه Pro در دسترسه"
     )
+    await tg("sendMessage", {
+        "chat_id": chat_id,
+        "text": text
+    })
 
-# ---------- CALLBACKS ----------
-@dp.callback_query(F.data == "start_view")
-async def start_view(call: CallbackQuery):
-    cur.execute("INSERT OR REPLACE INTO status (user_id, active) VALUES (?,1)", (call.from_user.id,))
-    db.commit()
-    await call.message.answer("✅ ویو برای شما فعال شد")
-    await call.answer()
+async def handle_update(update):
+    if "message" not in update:
+        return
 
-@dp.callback_query(F.data == "stop_view")
-async def stop_view(call: CallbackQuery):
-    cur.execute("UPDATE status SET active=0 WHERE user_id=?", (call.from_user.id,))
-    db.commit()
-    await call.message.answer("⏹ ویو متوقف شد")
-    await call.answer()
+    msg = update["message"]
+    chat_id = msg["chat"]["id"]
 
-@dp.callback_query(F.data == "referral")
-async def referral(call: CallbackQuery):
-    me = await bot.me()
-    link = f"https://t.me/{me.username}?start={call.from_user.id}"
-    await call.message.answer(f"👥 لینک دعوت شما:\n\n{link}\n🎯 هر دعوت = 1 امتیاز")
-    await call.answer()
+    if msg.get("text") == "/start":
+        if str(chat_id) not in data["users"]:
+            data["users"][str(chat_id)] = {
+                "points": 0,
+                "active": True
+            }
+            save_data(data)
+        await start_handler(chat_id)
+        return
 
-@dp.callback_query(F.data == "gift")
-async def gift(call: CallbackQuery):
-    cur.execute("UPDATE users SET points = points + 1 WHERE user_id=?", (call.from_user.id,))
-    db.commit()
-    await call.message.answer("🎁 هدیه امروز دریافت شد (+1 امتیاز)")
-    await call.answer()
+    if msg["chat"]["type"] in ["channel"]:
+        if "text" in msg or "photo" in msg:
+            for dest in data["destinations"]:
+                await tg("forwardMessage", {
+                    "chat_id": dest,
+                    "from_chat_id": msg["chat"]["id"],
+                    "message_id": msg["message_id"]
+                })
 
-@dp.callback_query(F.data == "log")
-async def log(call: CallbackQuery):
-    cur.execute("SELECT points FROM users WHERE user_id=?", (call.from_user.id,))
-    points = cur.fetchone()[0]
-    await call.message.answer(
-        "📊 لاگ شما\n"
-        "━━━━━━━━━━━━\n"
-        f"⭐ امتیاز: {points}\n"
-        "⚡ نسخه: Normal\n"
-        "📌 ویو: متن و عکس"
-    )
-    await call.answer()
+async def webhook(request):
+    update = await request.json()
+    await handle_update(update)
+    return web.Response(text="ok")
 
-@dp.callback_query(F.data == "pro")
-async def pro(call: CallbackQuery):
-    await call.message.answer(
-        "🚀 نسخه Pro فعال‌تره!\n\n"
-        "✔ سرعت بیشتر\n"
-        "✔ همه نوع پیام\n"
-        "✔ نامحدود\n\n"
-        f"🤖 ربات Pro:\n{PRO_BOT_ID}"
-    )
-    await call.answer()
+async def on_startup(app):
+    await tg("setWebhook", {
+        "url": f"{WEBHOOK_URL}/webhook"
+    })
 
-# ---------- WEBHOOK SETUP ----------
-async def on_startup(bot: Bot):
-    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
-
-async def on_shutdown(bot: Bot):
-    await bot.delete_webhook()
-
-def main():
-    app = web.Application()
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-
-    app.on_startup.append(lambda _: on_startup(bot))
-    app.on_shutdown.append(lambda _: on_shutdown(bot))
-
-    web.run_app(app, port=PORT)
+app = web.Application()
+app.router.add_post("/webhook", webhook)
+app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
-    main()
+    web.run_app(app, port=PORT)
